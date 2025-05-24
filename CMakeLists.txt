@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.20)
+set (CMAKE_CXX_STANDARD 20)
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDebug")
+else()
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
+
+project(NDArray)
+
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+
+add_subdirectory(Testbed)
