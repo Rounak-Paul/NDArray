@@ -1,1210 +1,481 @@
-#pragma once
+#ifndef NDARRAY_H
+#define NDARRAY_H
 
 #include <vector>
 #include <memory>
 #include <initializer_list>
+#include <functional>
 #include <algorithm>
 #include <numeric>
-#include <functional>
-#include <stdexcept>
-#include <iostream>
 #include <cmath>
-#include <random>
+#include <iostream>
 #include <sstream>
-#include <iomanip>
+#include <random>
+#include <cassert>
 #include <type_traits>
 
 template<typename T>
 class NDArray {
 private:
-    std::shared_ptr<std::vector<T>> data_;
+    std::vector<T> data_;
     std::vector<size_t> shape_;
     std::vector<size_t> strides_;
-    size_t offset_;
+    size_t size_;
     
-    void calculate_strides() {
-        strides_.resize(shape_.size());
-        if (!shape_.empty()) {
-            strides_.back() = 1;
-            for (int i = static_cast<int>(shape_.size()) - 2; i >= 0; --i) {
-                strides_[i] = strides_[i + 1] * shape_[i + 1];
-            }
-        }
-    }
-    
-    size_t flat_index(const std::vector<size_t>& indices) const {
-        if (indices.size() != shape_.size()) {
-            throw std::invalid_argument("Index dimension mismatch");
-        }
-        size_t idx = offset_;
-        for (size_t i = 0; i < indices.size(); ++i) {
-            if (indices[i] >= shape_[i]) {
-                throw std::out_of_range("Index out of bounds");
-            }
-            idx += indices[i] * strides_[i];
-        }
-        return idx;
-    }
-    
-    std::vector<size_t> unravel_index(size_t flat_idx) const {
-        std::vector<size_t> indices(shape_.size());
-        for (size_t i = 0; i < shape_.size(); ++i) {
-            indices[i] = (flat_idx / strides_[i]) % shape_[i];
-        }
-        return indices;
-    }
+    void calculate_strides();
+    size_t flat_index(const std::vector<size_t>& indices) const;
+    std::vector<size_t> unravel_index(size_t flat_idx) const;
+    bool can_broadcast(const NDArray& other) const;
+    std::vector<size_t> broadcast_shape(const NDArray& other) const;
 
 public:
-    // Constructors
-    NDArray() : offset_(0) {}
-    
-    explicit NDArray(const std::vector<size_t>& shape, const T& fill_value = T{})
-        : shape_(shape), offset_(0) {
-        size_t total_size = std::accumulate(shape_.begin(), shape_.end(), 1ULL, std::multiplies<size_t>());
-        data_ = std::make_shared<std::vector<T>>(total_size, fill_value);
+    // Constructors and Destructors
+    template<typename T>
+    NDArray<T>::NDArray() : size_(0) {
+        // Default constructor - creates empty array
+    }
+
+    template<typename T>
+    NDArray<T>::NDArray(const std::vector<size_t>& shape) : shape_(shape) {
+        // Constructor with shape - creates uninitialized array
+        size_ = std::accumulate(shape_.begin(), shape_.end(), size_t(1), std::multiplies<size_t>());
+        data_.resize(size_);
         calculate_strides();
     }
-    
-    NDArray(const std::vector<size_t>& shape, const std::vector<T>& data)
-        : shape_(shape), offset_(0) {
-        size_t total_size = std::accumulate(shape_.begin(), shape_.end(), 1ULL, std::multiplies<size_t>());
-        if (data.size() != total_size) {
-            throw std::invalid_argument("Data size doesn't match shape");
-        }
-        data_ = std::make_shared<std::vector<T>>(data);
+
+    template<typename T>
+    NDArray<T>::NDArray(const std::vector<size_t>& shape, const T& value) : shape_(shape) {
+        // Constructor with shape and fill value - creates array filled with specified value
+        size_ = std::accumulate(shape_.begin(), shape_.end(), size_t(1), std::multiplies<size_t>());
+        data_.resize(size_, value);
         calculate_strides();
     }
-    
-    // Initializer list constructors
-    NDArray(std::initializer_list<T> list) {
-        shape_ = {list.size()};
-        data_ = std::make_shared<std::vector<T>>(list);
-        offset_ = 0;
+
+    template<typename T>
+    NDArray<T>::NDArray(std::initializer_list<T> list) : data_(list) {
+        // Constructor from initializer list - creates 1D array
+        size_ = data_.size();
+        shape_ = {size_};
         calculate_strides();
     }
-    
-    template<typename U>
-    NDArray(std::initializer_list<std::initializer_list<U>> list) {
-        shape_ = {list.size(), list.begin()->size()};
-        data_ = std::make_shared<std::vector<T>>();
-        data_->reserve(shape_[0] * shape_[1]);
-        
-        for (const auto& row : list) {
-            if (row.size() != shape_[1]) {
-                throw std::invalid_argument("Inconsistent row sizes");
-            }
-            for (const auto& val : row) {
-                data_->push_back(static_cast<T>(val));
-            }
-        }
-        offset_ = 0;
-        calculate_strides();
-    }
-    
-    // Copy and move constructors
-    NDArray(const NDArray& other) = default;
-    NDArray(NDArray&& other) noexcept = default;
-    NDArray& operator=(const NDArray& other) = default;
-    NDArray& operator=(NDArray&& other) noexcept = default;
-    
-    // Basic properties
-    const std::vector<size_t>& shape() const { return shape_; }
-    size_t ndim() const { return shape_.size(); }
-    size_t size() const { 
-        return std::accumulate(shape_.begin(), shape_.end(), 1ULL, std::multiplies<size_t>());
-    }
-    bool empty() const { return size() == 0; }
-    
-    // Element access
-    template<typename... Indices>
-    T& operator()(Indices... indices) {
-        std::vector<size_t> idx_vec = {static_cast<size_t>(indices)...};
-        return (*data_)[flat_index(idx_vec)];
-    }
-    
-    template<typename... Indices>
-    const T& operator()(Indices... indices) const {
-        std::vector<size_t> idx_vec = {static_cast<size_t>(indices)...};
-        return (*data_)[flat_index(idx_vec)];
-    }
-    
-    // Dynamic N-dimensional indexing
-    T& operator[](const std::vector<size_t>& indices) {
-        return (*data_)[flat_index(indices)];
-    }
-    
-    const T& operator[](const std::vector<size_t>& indices) const {
-        return (*data_)[flat_index(indices)];
-    }
-    
-    T& at(const std::vector<size_t>& indices) {
-        return (*data_)[flat_index(indices)];
-    }
-    
-    const T& at(const std::vector<size_t>& indices) const {
-        return (*data_)[flat_index(indices)];
-    }
-    
-    // Flatten access
-    T& flat(size_t index) {
-        if (index >= size()) throw std::out_of_range("Flat index out of bounds");
-        return (*data_)[offset_ + index];
-    }
-    
-    const T& flat(size_t index) const {
-        if (index >= size()) throw std::out_of_range("Flat index out of bounds");
-        return (*data_)[offset_ + index];
-    }
-    
-    // Reshape
-    NDArray reshape(const std::vector<size_t>& new_shape) const {
-        size_t new_size = std::accumulate(new_shape.begin(), new_shape.end(), 1ULL, std::multiplies<size_t>());
-        if (new_size != size()) {
-            throw std::invalid_argument("Cannot reshape array: size mismatch");
-        }
-        
-        NDArray result;
-        result.data_ = data_;
-        result.shape_ = new_shape;
-        result.offset_ = offset_;
-        result.calculate_strides();
-        return result;
-    }
-    
-    // Transpose
-    NDArray T() const {
-        std::vector<size_t> new_shape = shape_;
-        std::reverse(new_shape.begin(), new_shape.end());
-        
-        NDArray result(new_shape);
-        
-        for (size_t i = 0; i < size(); ++i) {
-            auto indices = unravel_index(i);
-            std::reverse(indices.begin(), indices.end());
-            result.at(indices) = flat(i);
-        }
-        
-        return result;
-    }
-    
-    // Arithmetic operations
-    NDArray operator+(const NDArray& other) const {
-        if (shape_ != other.shape_) {
-            throw std::invalid_argument("Shape mismatch for addition");
-        }
-        
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) + other.flat(i);
-        }
-        return result;
-    }
-    
-    NDArray operator-(const NDArray& other) const {
-        if (shape_ != other.shape_) {
-            throw std::invalid_argument("Shape mismatch for subtraction");
-        }
-        
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) - other.flat(i);
-        }
-        return result;
-    }
-    
-    NDArray operator*(const NDArray& other) const {
-        if (shape_ != other.shape_) {
-            throw std::invalid_argument("Shape mismatch for multiplication");
-        }
-        
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) * other.flat(i);
-        }
-        return result;
-    }
-    
-    NDArray operator/(const NDArray& other) const {
-        if (shape_ != other.shape_) {
-            throw std::invalid_argument("Shape mismatch for division");
-        }
-        
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) / other.flat(i);
-        }
-        return result;
-    }
-    
-    // Scalar operations
-    NDArray operator+(const T& scalar) const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) + scalar;
-        }
-        return result;
-    }
-    
-    NDArray operator-(const T& scalar) const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) - scalar;
-        }
-        return result;
-    }
-    
-    NDArray operator*(const T& scalar) const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) * scalar;
-        }
-        return result;
-    }
-    
-    NDArray operator/(const T& scalar) const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = flat(i) / scalar;
-        }
-        return result;
-    }
-    
-    // In-place operations
-    NDArray& operator+=(const NDArray& other) {
-        *this = *this + other;
-        return *this;
-    }
-    
-    NDArray& operator-=(const NDArray& other) {
-        *this = *this - other;
-        return *this;
-    }
-    
-    NDArray& operator*=(const NDArray& other) {
-        *this = *this * other;
-        return *this;
-    }
-    
-    NDArray& operator/=(const NDArray& other) {
-        *this = *this / other;
-        return *this;
-    }
-    
-    NDArray& operator+=(const T& scalar) {
-        for (size_t i = 0; i < size(); ++i) {
-            flat(i) += scalar;
-        }
-        return *this;
-    }
-    
-    NDArray& operator-=(const T& scalar) {
-        for (size_t i = 0; i < size(); ++i) {
-            flat(i) -= scalar;
-        }
-        return *this;
-    }
-    
-    NDArray& operator*=(const T& scalar) {
-        for (size_t i = 0; i < size(); ++i) {
-            flat(i) *= scalar;
-        }
-        return *this;
-    }
-    
-    NDArray& operator/=(const T& scalar) {
-        for (size_t i = 0; i < size(); ++i) {
-            flat(i) /= scalar;
-        }
-        return *this;
-    }
-    
-    // Neural Network utility functions
-template<typename T>
-NDArray<T> relu(const NDArray<T>& arr) {
-    return arr.relu();
-}
 
-template<typename T>
-NDArray<T> sigmoid(const NDArray<T>& arr) {
-    return arr.sigmoid();
-}
+    template<typename T>
+    NDArray<T>::NDArray(const NDArray& other) 
+        : data_(other.data_), shape_(other.shape_), strides_(other.strides_), size_(other.size_) {
+        // Copy constructor - deep copy of another NDArray
+    }
 
-template<typename T>
-NDArray<T> softmax(const NDArray<T>& arr, size_t axis = -1) {
-    return arr.softmax(axis);
-}
+    template<typename T>
+    NDArray<T>::NDArray(NDArray&& other) noexcept 
+        : data_(std::move(other.data_)), 
+        shape_(std::move(other.shape_)), 
+        strides_(std::move(other.strides_)), 
+        size_(other.size_) {
+        // Move constructor - takes ownership of another NDArray's resources
+        other.size_ = 0;
+    }
 
-// Xavier/Glorot initialization
-template<typename T>
-NDArray<T> xavier_uniform(const std::vector<size_t>& shape, std::mt19937& rng) {
-    size_t fan_in = shape.size() > 1 ? shape[shape.size()-2] : 1;
-    size_t fan_out = shape.back();
-    T limit = std::sqrt(T{6} / (fan_in + fan_out));
+    ~NDArray() = default;
     
-    std::uniform_real_distribution<T> dist(-limit, limit);
-    
-    size_t total_size = std::accumulate(shape.begin(), shape.end(), 1ULL, std::multiplies<size_t>());
-    std::vector<T> data(total_size);
-    
-    for (auto& val : data) {
-        val = dist(rng);
+    // Assignment operators
+    template<typename T>
+    NDArray<T>& NDArray<T>::operator=(const NDArray& other) {
+        // Copy assignment operator - deep copy from another NDArray
+        if (this != &other) {
+            data_ = other.data_;
+            shape_ = other.shape_;
+            strides_ = other.strides_;
+            size_ = other.size_;
+        }
+        return *this;
     }
-    
-    return NDArray<T>(shape, data);
-}
 
-// He initialization  
-template<typename T>
-NDArray<T> he_uniform(const std::vector<size_t>& shape, std::mt19937& rng) {
-    size_t fan_in = shape.size() > 1 ? shape[shape.size()-2] : 1;
-    T limit = std::sqrt(T{6} / fan_in);
-    
-    std::uniform_real_distribution<T> dist(-limit, limit);
-    
-    size_t total_size = std::accumulate(shape.begin(), shape.end(), 1ULL, std::multiplies<size_t>());
-    std::vector<T> data(total_size);
-    
-    for (auto& val : data) {
-        val = dist(rng);
+    template<typename T>
+    NDArray<T>& NDArray<T>::operator=(NDArray&& other) noexcept {
+        // Move assignment operator - takes ownership of another NDArray's resources
+        if (this != &other) {
+            data_ = std::move(other.data_);
+            shape_ = std::move(other.shape_);
+            strides_ = std::move(other.strides_);
+            size_ = other.size_;
+            other.size_ = 0;
+        }
+        return *this;
     }
-    
-    return NDArray<T>(shape, data);
-}
 
-// Loss functions
-template<typename T>
-T mean_squared_error(const NDArray<T>& predictions, const NDArray<T>& targets) {
-    if (predictions.shape() != targets.shape()) {
-        throw std::invalid_argument("Predictions and targets must have same shape");
+    template<typename T>
+    NDArray<T>& NDArray<T>::operator=(const T& value) {
+        // Scalar assignment operator - fills entire array with a single value
+        std::fill(data_.begin(), data_.end(), value);
+        return *this;
     }
     
-    T sum = T{};
-    for (size_t i = 0; i < predictions.size(); ++i) {
-        T diff = predictions.flat(i) - targets.flat(i);
-        sum += diff * diff;
-    }
+    // Factory methods
+    static NDArray zeros(const std::vector<size_t>& shape);
+    static NDArray ones(const std::vector<size_t>& shape);
+    static NDArray full(const std::vector<size_t>& shape, const T& value);
+    static NDArray empty(const std::vector<size_t>& shape);
+    static NDArray arange(T start, T stop, T step = T(1));
+    static NDArray linspace(T start, T stop, size_t num = 50);
+    static NDArray logspace(T start, T stop, size_t num = 50, T base = T(10));
+    static NDArray eye(size_t n, size_t m = 0);
+    static NDArray identity(size_t n);
+    static NDArray random(const std::vector<size_t>& shape, T min_val = T(0), T max_val = T(1));
+    static NDArray randn(const std::vector<size_t>& shape);
+    static NDArray from_vector(const std::vector<T>& vec, const std::vector<size_t>& shape);
     
-    return sum / static_cast<T>(predictions.size());
-}
-
-template<typename T>
-T cross_entropy_loss(const NDArray<T>& predictions, const NDArray<T>& targets) {
-    if (predictions.shape() != targets.shape()) {
-        throw std::invalid_argument("Predictions and targets must have same shape");
-    }
+    // Shape and dimension methods
+    const std::vector<size_t>& shape() const;
+    size_t ndim() const;
+    size_t size() const;
+    size_t itemsize() const;
+    size_t nbytes() const;
+    bool empty() const;
     
-    T loss = T{};
-    for (size_t i = 0; i < predictions.size(); ++i) {
-        loss -= targets.flat(i) * std::log(std::max(predictions.flat(i), T{1e-15}));
-    }
+    // Indexing and slicing
+    T& operator[](size_t idx);
+    const T& operator[](size_t idx) const;
+    T& operator()(const std::vector<size_t>& indices);
+    const T& operator()(const std::vector<size_t>& indices) const;
+    T& at(const std::vector<size_t>& indices);
+    const T& at(const std::vector<size_t>& indices) const;
     
-    return loss / static_cast<T>(predictions.shape()[0]); // Assuming batch dimension is first
-}
-    NDArray abs() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::abs(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray sqrt() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::sqrt(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray exp() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::exp(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray log() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::log(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray sin() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::sin(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray cos() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::cos(flat(i));
-        }
-        return result;
-    }
-    
-    NDArray pow(const T& exponent) const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::pow(flat(i), exponent);
-        }
-        return result;
-    }
-    
-    // Reduction operations
-    T sum() const {
-        T result = T{};
-        for (size_t i = 0; i < size(); ++i) {
-            result += flat(i);
-        }
-        return result;
-    }
-    
-    T mean() const {
-        return sum() / static_cast<T>(size());
-    }
-    
-    T min() const {
-        if (size() == 0) throw std::runtime_error("Cannot find min of empty array");
-        T result = flat(0);
-        for (size_t i = 1; i < size(); ++i) {
-            result = std::min(result, flat(i));
-        }
-        return result;
-    }
-    
-    T max() const {
-        if (size() == 0) throw std::runtime_error("Cannot find max of empty array");
-        T result = flat(0);
-        for (size_t i = 1; i < size(); ++i) {
-            result = std::max(result, flat(i));
-        }
-        return result;
-    }
-    
-    // Axis-wise operations
-    NDArray sum(size_t axis) const {
-        if (axis >= ndim()) {
-            throw std::invalid_argument("Axis out of bounds");
-        }
-        
-        std::vector<size_t> new_shape = shape_;
-        new_shape.erase(new_shape.begin() + axis);
-        
-        if (new_shape.empty()) {
-            return NDArray({1}, {sum()});
-        }
-        
-        NDArray result(new_shape, T{});
-        
-        for (size_t i = 0; i < size(); ++i) {
-            auto indices = unravel_index(i);
-            auto result_indices = indices;
-            result_indices.erase(result_indices.begin() + axis);
-            result.at(result_indices) += flat(i);
-        }
-        
-        return result;
-    }
-    
-    NDArray mean(size_t axis) const {
-        auto result = sum(axis);
-        T divisor = static_cast<T>(shape_[axis]);
-        result /= divisor;
-        return result;
-    }
-    
-    // Matrix operations (supports N-D tensors)
-    NDArray dot(const NDArray& other) const {
-        // Handle 1-D vectors
-        if (ndim() == 1 && other.ndim() == 1) {
-            if (shape_[0] != other.shape_[0]) {
-                throw std::invalid_argument("Vector dimensions must match for dot product");
-            }
-            T result = T{};
-            for (size_t i = 0; i < shape_[0]; ++i) {
-                result += (*this)({i}) * other({i});
-            }
-            return NDArray({1}, {result});
-        }
-        
-        // Handle matrix-vector multiplication
-        if (ndim() == 2 && other.ndim() == 1) {
-            if (shape_[1] != other.shape_[0]) {
-                throw std::invalid_argument("Incompatible dimensions for matrix-vector multiplication");
-            }
-            NDArray result({shape_[0]}, T{});
-            for (size_t i = 0; i < shape_[0]; ++i) {
-                for (size_t j = 0; j < shape_[1]; ++j) {
-                    result({i}) += (*this)({i, j}) * other({j});
-                }
-            }
-            return result;
-        }
-        
-        // Handle standard matrix multiplication
-        if (ndim() == 2 && other.ndim() == 2) {
-            if (shape_[1] != other.shape_[0]) {
-                throw std::invalid_argument("Incompatible dimensions for matrix multiplication");
-            }
-            
-            std::vector<size_t> result_shape = {shape_[0], other.shape_[1]};
-            NDArray result(result_shape, T{});
-            
-            for (size_t i = 0; i < shape_[0]; ++i) {
-                for (size_t j = 0; j < other.shape_[1]; ++j) {
-                    for (size_t k = 0; k < shape_[1]; ++k) {
-                        result({i, j}) += (*this)({i, k}) * other({k, j});
-                    }
-                }
-            }
-            
-            return result;
-        }
-        
-        // Handle N-D tensor contraction (last axis of first, first axis of second)
-        if (ndim() >= 2 && other.ndim() >= 2) {
-            if (shape_.back() != other.shape_[0]) {
-                throw std::invalid_argument("Incompatible dimensions for tensor dot product");
-            }
-            
-            std::vector<size_t> result_shape = shape_;
-            result_shape.pop_back(); // Remove last dimension
-            for (size_t i = 1; i < other.shape_.size(); ++i) {
-                result_shape.push_back(other.shape_[i]); // Add other's dimensions except first
-            }
-            
-            NDArray result(result_shape, T{});
-            
-            // This is a simplified N-D implementation
-            // For full tensor operations, you'd want optimized BLAS routines
-            size_t contract_dim = shape_.back();
-            size_t left_size = size() / contract_dim;
-            size_t right_size = other.size() / contract_dim;
-            
-            for (size_t i = 0; i < left_size; ++i) {
-                for (size_t j = 0; j < right_size; ++j) {
-                    T sum = T{};
-                    for (size_t k = 0; k < contract_dim; ++k) {
-                        sum += flat(i * contract_dim + k) * other.flat(k * right_size + j);
-                    }
-                    result.flat(i * right_size + j) = sum;
-                }
-            }
-            
-            return result;
-        }
-        
-        throw std::invalid_argument("Unsupported array dimensions for dot product");
-    }
+    // Multi-dimensional indexing
+    template<typename... Args>
+    T& operator()(Args... args);
+    template<typename... Args>
+    const T& operator()(Args... args) const;
     
     // Slicing
-    NDArray slice(const std::vector<std::pair<size_t, size_t>>& ranges) const {
-        if (ranges.size() != ndim()) {
-            throw std::invalid_argument("Number of slice ranges must match array dimensions");
-        }
-        
-        std::vector<size_t> new_shape;
-        for (size_t i = 0; i < ranges.size(); ++i) {
-            if (ranges[i].first >= shape_[i] || ranges[i].second > shape_[i] || 
-                ranges[i].first >= ranges[i].second) {
-                throw std::invalid_argument("Invalid slice range");
-            }
-            new_shape.push_back(ranges[i].second - ranges[i].first);
-        }
-        
-        NDArray result(new_shape);
-        
-        std::function<void(std::vector<size_t>&, size_t)> fill_slice = 
-            [&](std::vector<size_t>& indices, size_t dim) {
-                if (dim == ndim()) {
-                    std::vector<size_t> src_indices = indices;
-                    for (size_t i = 0; i < indices.size(); ++i) {
-                        src_indices[i] += ranges[i].first;
-                    }
-                    result.at(indices) = at(src_indices);
-                    return;
-                }
-                
-                for (size_t i = 0; i < new_shape[dim]; ++i) {
-                    indices[dim] = i;
-                    fill_slice(indices, dim + 1);
-                }
-            };
-        
-        std::vector<size_t> indices(ndim());
-        fill_slice(indices, 0);
-        
-        return result;
-    }
+    NDArray slice(const std::vector<std::pair<int, int>>& ranges) const;
+    NDArray operator[](const std::vector<size_t>& indices) const;
     
-    // Neural Network specific operations
+    // Reshape and resize
+    NDArray reshape(const std::vector<size_t>& new_shape) const;
+    NDArray& reshape_inplace(const std::vector<size_t>& new_shape);
+    NDArray resize(const std::vector<size_t>& new_shape) const;
+    NDArray flatten() const;
+    NDArray ravel() const;
+    NDArray squeeze(int axis = -1) const;
+    NDArray expand_dims(int axis) const;
     
-    // Activation functions
-    NDArray relu() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::max(T{}, flat(i));
-        }
-        return result;
-    }
+    // Transpose and axis manipulation
+    NDArray transpose() const;
+    NDArray transpose(const std::vector<size_t>& axes) const;
+    NDArray swapaxes(size_t axis1, size_t axis2) const;
+    NDArray moveaxis(size_t source, size_t destination) const;
+    NDArray rollaxis(size_t axis, size_t start = 0) const;
     
-    NDArray sigmoid() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = T{1} / (T{1} + std::exp(-flat(i)));
-        }
-        return result;
-    }
+    // Arithmetic operations
+    NDArray operator+(const NDArray& other) const;
+    NDArray operator-(const NDArray& other) const;
+    NDArray operator*(const NDArray& other) const;
+    NDArray operator/(const NDArray& other) const;
+    NDArray operator%(const NDArray& other) const;
+    NDArray pow(const NDArray& other) const; // power
     
-    NDArray tanh() const {
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            result.flat(i) = std::tanh(flat(i));
-        }
-        return result;
-    }
+    // Scalar arithmetic operations
+    NDArray operator+(const T& scalar) const;
+    NDArray operator-(const T& scalar) const;
+    NDArray operator*(const T& scalar) const;
+    NDArray operator/(const T& scalar) const;
+    NDArray operator%(const T& scalar) const;
+    NDArray pow(const T& scalar) const;
     
-    NDArray softmax(size_t axis = -1) const {
-        if (axis == static_cast<size_t>(-1)) {
-            axis = ndim() - 1;
-        }
-        
-        // Subtract max for numerical stability
-        auto max_vals = max_along_axis(axis);
-        auto shifted = subtract_broadcast(max_vals, axis);
-        auto exp_vals = shifted.exp();
-        auto sum_vals = exp_vals.sum(axis);
-        
-        return exp_vals.divide_broadcast(sum_vals, axis);
-    }
+    // In-place arithmetic operations
+    NDArray& operator+=(const NDArray& other);
+    NDArray& operator-=(const NDArray& other);
+    NDArray& operator*=(const NDArray& other);
+    NDArray& operator/=(const NDArray& other);
+    NDArray& operator%=(const NDArray& other);
+    NDArray& pow_inplace(const NDArray& other);
     
-    // Convolution operation (basic 2D implementation)
-    NDArray conv2d(const NDArray& kernel, size_t stride = 1, size_t padding = 0) const {
-        if (ndim() != 4 || kernel.ndim() != 4) {
-            throw std::invalid_argument("Conv2D requires 4D tensors (batch, channels, height, width)");
-        }
-        
-        size_t batch_size = shape_[0];
-        size_t in_channels = shape_[1];
-        size_t in_height = shape_[2];
-        size_t in_width = shape_[3];
-        
-        size_t out_channels = kernel.shape_[0];
-        size_t kernel_height = kernel.shape_[2];
-        size_t kernel_width = kernel.shape_[3];
-        
-        if (in_channels != kernel.shape_[1]) {
-            throw std::invalid_argument("Input channels must match kernel input channels");
-        }
-        
-        size_t out_height = (in_height + 2 * padding - kernel_height) / stride + 1;
-        size_t out_width = (in_width + 2 * padding - kernel_width) / stride + 1;
-        
-        NDArray result({batch_size, out_channels, out_height, out_width}, T{});
-        
-        // Simple convolution implementation (not optimized)
-        for (size_t b = 0; b < batch_size; ++b) {
-            for (size_t oc = 0; oc < out_channels; ++oc) {
-                for (size_t oh = 0; oh < out_height; ++oh) {
-                    for (size_t ow = 0; ow < out_width; ++ow) {
-                        T sum = T{};
-                        for (size_t ic = 0; ic < in_channels; ++ic) {
-                            for (size_t kh = 0; kh < kernel_height; ++kh) {
-                                for (size_t kw = 0; kw < kernel_width; ++kw) {
-                                    size_t ih = oh * stride + kh - padding;
-                                    size_t iw = ow * stride + kw - padding;
-                                    
-                                    if (ih < in_height && iw < in_width) {
-                                        sum += (*this)({b, ic, ih, iw}) * kernel({oc, ic, kh, kw});
-                                    }
-                                }
-                            }
-                        }
-                        result({b, oc, oh, ow}) = sum;
-                    }
-                }
-            }
-        }
-        
-        return result;
-    }
+    // In-place scalar operations
+    NDArray& operator+=(const T& scalar);
+    NDArray& operator-=(const T& scalar);
+    NDArray& operator*=(const T& scalar);
+    NDArray& operator/=(const T& scalar);
+    NDArray& operator%=(const T& scalar);
+    NDArray& pow_inplace(const T& scalar);
     
-    // Max pooling
-    NDArray max_pool2d(size_t pool_size, size_t stride = 0) const {
-        if (stride == 0) stride = pool_size;
-        
-        if (ndim() != 4) {
-            throw std::invalid_argument("MaxPool2D requires 4D tensor");
-        }
-        
-        size_t batch_size = shape_[0];
-        size_t channels = shape_[1];
-        size_t in_height = shape_[2];
-        size_t in_width = shape_[3];
-        
-        size_t out_height = (in_height - pool_size) / stride + 1;
-        size_t out_width = (in_width - pool_size) / stride + 1;
-        
-        NDArray result({batch_size, channels, out_height, out_width});
-        
-        for (size_t b = 0; b < batch_size; ++b) {
-            for (size_t c = 0; c < channels; ++c) {
-                for (size_t oh = 0; oh < out_height; ++oh) {
-                    for (size_t ow = 0; ow < out_width; ++ow) {
-                        T max_val = std::numeric_limits<T>::lowest();
-                        
-                        for (size_t ph = 0; ph < pool_size; ++ph) {
-                            for (size_t pw = 0; pw < pool_size; ++pw) {
-                                size_t ih = oh * stride + ph;
-                                size_t iw = ow * stride + pw;
-                                max_val = std::max(max_val, (*this)({b, c, ih, iw}));
-                            }
-                        }
-                        
-                        result({b, c, oh, ow}) = max_val;
-                    }
-                }
-            }
-        }
-        
-        return result;
-    }
+    // Unary operations
+    NDArray operator-() const;
+    NDArray operator+() const;
     
-    // Batch normalization (inference mode)
-    NDArray batch_norm(const NDArray& mean, const NDArray& var, 
-                      const NDArray& gamma, const NDArray& beta, T eps = T{1e-5}) const {
-        // Assume channel dimension is 1 (standard for NCHW format)
-        if (mean.size() != shape_[1] || var.size() != shape_[1] || 
-            gamma.size() != shape_[1] || beta.size() != shape_[1]) {
-            throw std::invalid_argument("BatchNorm parameters must match channel dimension");
-        }
-        
-        NDArray result(shape_);
-        
-        for (size_t i = 0; i < size(); ++i) {
-            auto indices = unravel_index(i);
-            size_t channel = indices[1];
-            
-            T normalized = (flat(i) - mean.flat(channel)) / std::sqrt(var.flat(channel) + eps);
-            result.flat(i) = gamma.flat(channel) * normalized + beta.flat(channel);
-        }
-        
-        return result;
-    }
+    // Comparison operations
+    NDArray operator==(const NDArray& other) const;
+    NDArray operator!=(const NDArray& other) const;
+    NDArray operator<(const NDArray& other) const;
+    NDArray operator<=(const NDArray& other) const;
+    NDArray operator>(const NDArray& other) const;
+    NDArray operator>=(const NDArray& other) const;
     
-    // Dropout (training mode)
-    NDArray dropout(T probability, std::mt19937& rng) const {
-        std::uniform_real_distribution<T> dist(T{0}, T{1});
-        T scale = T{1} / (T{1} - probability);
-        
-        NDArray result(shape_);
-        for (size_t i = 0; i < size(); ++i) {
-            if (dist(rng) < probability) {
-                result.flat(i) = T{};
-            } else {
-                result.flat(i) = flat(i) * scale;
-            }
-        }
-        return result;
-    }
-
-private:
-    // Helper functions for neural network operations
-    NDArray max_along_axis(size_t axis) const {
-        std::vector<size_t> new_shape = shape_;
-        new_shape[axis] = 1;
-        
-        NDArray result(new_shape);
-        
-        // Implementation would need to iterate through axis
-        // Simplified version - you'd want to optimize this
-        for (size_t i = 0; i < result.size(); ++i) {
-            auto result_indices = result.unravel_index(i);
-            T max_val = std::numeric_limits<T>::lowest();
-            
-            for (size_t j = 0; j < shape_[axis]; ++j) {
-                auto indices = result_indices;
-                indices[axis] = j;
-                max_val = std::max(max_val, at(indices));
-            }
-            
-            result.flat(i) = max_val;
-        }
-        
-        return result;
-    }
+    // Scalar comparison operations
+    NDArray operator==(const T& scalar) const;
+    NDArray operator!=(const T& scalar) const;
+    NDArray operator<(const T& scalar) const;
+    NDArray operator<=(const T& scalar) const;
+    NDArray operator>(const T& scalar) const;
+    NDArray operator>=(const T& scalar) const;
     
-    NDArray subtract_broadcast(const NDArray& other, size_t axis) const {
-        NDArray result(shape_);
-        
-        for (size_t i = 0; i < size(); ++i) {
-            auto indices = unravel_index(i);
-            auto other_indices = indices;
-            other_indices[axis] = 0;  // Broadcast along axis
-            
-            result.flat(i) = flat(i) - other.at(other_indices);
-        }
-        
-        return result;
-    }
+    // Logical operations
+    NDArray operator&&(const NDArray& other) const;
+    NDArray operator||(const NDArray& other) const;
+    NDArray operator!() const;
     
-    NDArray divide_broadcast(const NDArray& other, size_t axis) const {
-        NDArray result(shape_);
-        
-        for (size_t i = 0; i < size(); ++i) {
-            auto indices = unravel_index(i);
-            auto other_indices = indices;
-            other_indices[axis] = 0;  // Broadcast along axis
-            
-            result.flat(i) = flat(i) / other.at(other_indices);
-        }
-        
-        return result;
-    }
-    static NDArray concatenate(const std::vector<NDArray>& arrays, size_t axis = 0) {
-        if (arrays.empty()) {
-            throw std::invalid_argument("Cannot concatenate empty array list");
-        }
-        
-        const auto& first = arrays[0];
-        if (axis >= first.ndim()) {
-            throw std::invalid_argument("Axis out of bounds");
-        }
-        
-        // Check shape compatibility
-        for (size_t i = 1; i < arrays.size(); ++i) {
-            if (arrays[i].ndim() != first.ndim()) {
-                throw std::invalid_argument("All arrays must have same number of dimensions");
-            }
-            for (size_t j = 0; j < first.ndim(); ++j) {
-                if (j != axis && arrays[i].shape_[j] != first.shape_[j]) {
-                    throw std::invalid_argument("Array dimensions must match except for concatenation axis");
-                }
-            }
-        }
-        
-        // Calculate new shape
-        std::vector<size_t> new_shape = first.shape_;
-        for (size_t i = 1; i < arrays.size(); ++i) {
-            new_shape[axis] += arrays[i].shape_[axis];
-        }
-        
-        NDArray result(new_shape);
-        
-        // Copy data
-        size_t offset = 0;
-        for (const auto& arr : arrays) {
-            for (size_t i = 0; i < arr.size(); ++i) {
-                auto indices = arr.unravel_index(i);
-                indices[axis] += offset;
-                result.at(indices) = arr.flat(i);
-            }
-            offset += arr.shape_[axis];
-        }
-        
-        return result;
-    }
+    // Bitwise operations (for integer types)
+    NDArray operator&(const NDArray& other) const;
+    NDArray operator|(const NDArray& other) const;
+    NDArray operator^(const NDArray& other) const; // XOR
+    NDArray operator~() const;
+    NDArray operator<<(const NDArray& other) const;
+    NDArray operator>>(const NDArray& other) const;
     
-    // Broadcasting check
-    static bool can_broadcast(const std::vector<size_t>& shape1, const std::vector<size_t>& shape2) {
-        size_t max_dims = std::max(shape1.size(), shape2.size());
-        
-        for (size_t i = 0; i < max_dims; ++i) {
-            size_t dim1 = i < shape1.size() ? shape1[shape1.size() - 1 - i] : 1;
-            size_t dim2 = i < shape2.size() ? shape2[shape2.size() - 1 - i] : 1;
-            
-            if (dim1 != dim2 && dim1 != 1 && dim2 != 1) {
-                return false;
-            }
-        }
-        
-        return true;
-    }
+    // Mathematical functions
+    NDArray abs() const;
+    NDArray sqrt() const;
+    NDArray exp() const;
+    NDArray exp2() const;
+    NDArray log() const;
+    NDArray log2() const;
+    NDArray log10() const;
+    NDArray sin() const;
+    NDArray cos() const;
+    NDArray tan() const;
+    NDArray asin() const;
+    NDArray acos() const;
+    NDArray atan() const;
+    NDArray sinh() const;
+    NDArray cosh() const;
+    NDArray tanh() const;
+    NDArray floor() const;
+    NDArray ceil() const;
+    NDArray round() const;
+    NDArray sign() const;
+    NDArray reciprocal() const;
+    NDArray square() const;
+    NDArray power(const T& exponent) const;
+    NDArray power(const NDArray& exponent) const;
     
-    // String representation (handles any N dimensions)
-    std::string to_string() const {
-        std::ostringstream oss;
-        
-        if (ndim() == 0) {
-            oss << flat(0);
-            return oss.str();
-        }
-        
-        if (ndim() == 1) {
-            oss << "[";
-            for (size_t i = 0; i < shape_[0]; ++i) {
-                if (i > 0) oss << " ";
-                oss << (*this)({i});
-            }
-            oss << "]";
-        } else if (ndim() == 2) {
-            oss << "[";
-            for (size_t i = 0; i < shape_[0]; ++i) {
-                if (i > 0) oss << "\n ";
-                oss << "[";
-                for (size_t j = 0; j < shape_[1]; ++j) {
-                    if (j > 0) oss << " ";
-                    oss << std::setw(8) << (*this)({i, j});
-                }
-                oss << "]";
-            }
-            oss << "]";
-        } else {
-            // For 3D and higher, show summary information and some elements
-            oss << "NDArray(shape=[";
-            for (size_t i = 0; i < shape_.size(); ++i) {
-                if (i > 0) oss << ", ";
-                oss << shape_[i];
-            }
-            oss << "], dtype=" << typeid(T).name() << ")\n";
-            
-            // Show first few elements for preview
-            oss << "First elements: [";
-            size_t preview_count = std::min(size_t(10), size());
-            for (size_t i = 0; i < preview_count; ++i) {
-                if (i > 0) oss << ", ";
-                oss << flat(i);
-            }
-            if (size() > preview_count) {
-                oss << ", ...";
-            }
-            oss << "]";
-        }
-        
-        return oss.str();
-    }
+    // Reduction operations
+    T sum() const;
+    T sum(int axis) const;
+    NDArray sum_axis(int axis) const;
+    T prod() const;
+    T prod(int axis) const;
+    NDArray prod_axis(int axis) const;
+    T mean() const;
+    T mean(int axis) const;
+    NDArray mean_axis(int axis) const;
+    T var() const;
+    T var(int axis, int ddof = 0) const;
+    NDArray var_axis(int axis, int ddof = 0) const;
+    T std() const;
+    T std(int axis, int ddof = 0) const;
+    NDArray std_axis(int axis, int ddof = 0) const;
+    T min() const;
+    T min(int axis) const;
+    NDArray min_axis(int axis) const;
+    T max() const;
+    T max(int axis) const;
+    NDArray max_axis(int axis) const;
+    size_t argmin() const;
+    size_t argmin(int axis) const;
+    NDArray argmin_axis(int axis) const;
+    size_t argmax() const;
+    size_t argmax(int axis) const;
+    NDArray argmax_axis(int axis) const;
     
-    // Recursive helper for N-dimensional printing (optional detailed view)
-    void print_recursive(std::ostream& os, std::vector<size_t>& indices, size_t dim, 
-                        size_t max_elements_per_dim = 5) const {
-        if (dim == ndim()) {
-            os << (*this)[indices];
-            return;
-        }
-        
-        os << "[";
-        size_t elements_to_show = std::min(shape_[dim], max_elements_per_dim);
-        bool truncated = shape_[dim] > max_elements_per_dim;
-        
-        for (size_t i = 0; i < elements_to_show; ++i) {
-            if (i > 0) {
-                os << (dim == ndim() - 1 ? " " : "\n");
-                for (size_t d = 0; d <= dim; ++d) os << " ";
-            }
-            indices[dim] = i;
-            print_recursive(os, indices, dim + 1, max_elements_per_dim);
-        }
-        
-        if (truncated) {
-            os << (dim == ndim() - 1 ? " ..." : "\n...");
-        }
-        
-        os << "]";
-    }
+    // Cumulative operations
+    NDArray cumsum() const;
+    NDArray cumsum(int axis) const;
+    NDArray cumprod() const;
+    NDArray cumprod(int axis) const;
+    
+    // Sorting and searching
+    NDArray sort() const;
+    NDArray sort(int axis) const;
+    NDArray argsort() const;
+    NDArray argsort(int axis) const;
+    NDArray unique() const;
+    NDArray searchsorted(const T& value) const;
+    NDArray searchsorted(const NDArray& values) const;
+    
+    // Linear algebra
+    NDArray dot(const NDArray& other) const;
+    NDArray matmul(const NDArray& other) const;
+    NDArray cross(const NDArray& other) const;
+    T trace() const;
+    T det() const;
+    NDArray inv() const;
+    std::pair<NDArray, NDArray> eig() const;
+    std::tuple<NDArray, NDArray, NDArray> svd() const;
+    NDArray solve(const NDArray& b) const;
+    
+    // Array manipulation
+    NDArray concatenate(const NDArray& other, int axis = 0) const;
+    NDArray append(const NDArray& other, int axis = -1) const;
+    NDArray insert(size_t index, const NDArray& values, int axis = -1) const;
+    NDArray delete_elements(const std::vector<size_t>& indices, int axis = -1) const;
+    NDArray split(size_t sections, int axis = 0) const;
+    std::vector<NDArray> split_array(size_t sections, int axis = 0) const;
+    NDArray repeat(size_t repeats, int axis = -1) const;
+    NDArray tile(const std::vector<size_t>& reps) const;
+    NDArray flip(int axis = -1) const;
+    NDArray roll(int shift, int axis = -1) const;
+    
+    // Stacking and joining
+    static NDArray stack(const std::vector<NDArray>& arrays, int axis = 0);
+    static NDArray vstack(const std::vector<NDArray>& arrays);
+    static NDArray hstack(const std::vector<NDArray>& arrays);
+    static NDArray dstack(const std::vector<NDArray>& arrays);
+    static NDArray concatenate(const std::vector<NDArray>& arrays, int axis = 0);
+    
+    // Broadcasting
+    NDArray broadcast_to(const std::vector<size_t>& shape) const;
+    static std::pair<NDArray, NDArray> broadcast_arrays(const NDArray& a, const NDArray& b);
+    
+    // Conditional operations
+    NDArray where(const NDArray& condition, const NDArray& y) const;
+    NDArray where(const NDArray& condition, const T& y) const;
+    static NDArray where(const NDArray& condition, const NDArray& x, const NDArray& y);
+    NDArray select(const std::vector<NDArray>& condlist, const std::vector<NDArray>& choicelist, const T& default_val = T(0)) const;
+    
+    // Type conversion
+    template<typename U>
+    NDArray<U> astype() const;
+    NDArray copy() const;
+    NDArray view() const;
+    
+    // I/O and string representation
+    std::string str() const;
+    std::string repr() const;
+    void print() const;
+    void save(const std::string& filename) const;
+    static NDArray load(const std::string& filename);
+    
+    // Memory and data access
+    T* data();
+    const T* data() const;
+    std::vector<T>& get_data();
+    const std::vector<T>& get_data() const;
+    bool is_contiguous() const;
+    
+    // Statistical functions
+    T median() const;
+    T percentile(T q) const;
+    T quantile(T q) const;
+    std::pair<T, T> histogram_range() const;
+    NDArray histogram(size_t bins = 10) const;
+    T correlation(const NDArray& other) const;
+    T covariance(const NDArray& other) const;
+    
+    // Set operations
+    NDArray intersect1d(const NDArray& other) const;
+    NDArray union1d(const NDArray& other) const;
+    NDArray setdiff1d(const NDArray& other) const;
+    NDArray setxor1d(const NDArray& other) const;
+    bool in1d(const T& value) const;
+    NDArray isin(const NDArray& test_elements) const;
+    
+    // Iteration support
+    class iterator {
+    private:
+        typename std::vector<T>::iterator it_;
+    public:
+        explicit iterator(typename std::vector<T>::iterator it) : it_(it) {}
+        T& operator*() { return *it_; }
+        iterator& operator++() { ++it_; return *this; }
+        iterator operator++(int) { iterator tmp = *this; ++it_; return tmp; }
+        bool operator==(const iterator& other) const { return it_ == other.it_; }
+        bool operator!=(const iterator& other) const { return it_ != other.it_; }
+    };
+    
+    class const_iterator {
+    private:
+        typename std::vector<T>::const_iterator it_;
+    public:
+        explicit const_iterator(typename std::vector<T>::const_iterator it) : it_(it) {}
+        const T& operator*() const { return *it_; }
+        const_iterator& operator++() { ++it_; return *this; }
+        const_iterator operator++(int) { const_iterator tmp = *this; ++it_; return tmp; }
+        bool operator==(const const_iterator& other) const { return it_ == other.it_; }
+        bool operator!=(const const_iterator& other) const { return it_ != other.it_; }
+    };
+    
+    iterator begin() { return iterator(data_.begin()); }
+    iterator end() { return iterator(data_.end()); }
+    const_iterator begin() const { return const_iterator(data_.begin()); }
+    const_iterator end() const { return const_iterator(data_.end()); }
+    const_iterator cbegin() const { return const_iterator(data_.cbegin()); }
+    const_iterator cend() const { return const_iterator(data_.cend()); }
 };
 
-// Free functions (NumPy-style)
+// Global functions for NDArray operations
 template<typename T>
-NDArray<T> zeros(const std::vector<size_t>& shape) {
-    return NDArray<T>(shape, T{});
-}
+NDArray<T> operator+(const T& scalar, const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> ones(const std::vector<size_t>& shape) {
-    return NDArray<T>(shape, T{1});
-}
+NDArray<T> operator-(const T& scalar, const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> full(const std::vector<size_t>& shape, const T& value) {
-    return NDArray<T>(shape, value);
-}
+NDArray<T> operator*(const T& scalar, const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> arange(T start, T stop, T step = T{1}) {
-    std::vector<T> data;
-    for (T val = start; val < stop; val += step) {
-        data.push_back(val);
-    }
-    return NDArray<T>({data.size()}, data);
-}
+NDArray<T> operator/(const T& scalar, const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> linspace(T start, T stop, size_t num = 50) {
-    std::vector<T> data;
-    if (num == 0) return NDArray<T>({0});
-    if (num == 1) return NDArray<T>({1}, {start});
-    
-    T step = (stop - start) / static_cast<T>(num - 1);
-    for (size_t i = 0; i < num; ++i) {
-        data.push_back(start + static_cast<T>(i) * step);
-    }
-    return NDArray<T>({num}, data);
-}
+std::ostream& operator<<(std::ostream& os, const NDArray<T>& arr);
+
+// Mathematical functions (global)
+template<typename T>
+NDArray<T> abs(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> eye(size_t n) {
-    NDArray<T> result({n, n}, T{});
-    for (size_t i = 0; i < n; ++i) {
-        result(i, i) = T{1};
-    }
-    return result;
-}
+NDArray<T> sqrt(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> random(const std::vector<size_t>& shape, T min_val = T{0}, T max_val = T{1}) {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    std::uniform_real_distribution<> dis(static_cast<double>(min_val), static_cast<double>(max_val));
-    
-    size_t total_size = std::accumulate(shape.begin(), shape.end(), 1ULL, std::multiplies<size_t>());
-    std::vector<T> data(total_size);
-    
-    for (auto& val : data) {
-        val = static_cast<T>(dis(gen));
-    }
-    
-    return NDArray<T>(shape, data);
-}
-
-// Mathematical functions
-template<typename T>
-NDArray<T> abs(const NDArray<T>& arr) {
-    return arr.abs();
-}
+NDArray<T> exp(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> sqrt(const NDArray<T>& arr) {
-    return arr.sqrt();
-}
+NDArray<T> log(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> exp(const NDArray<T>& arr) {
-    return arr.exp();
-}
+NDArray<T> sin(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> log(const NDArray<T>& arr) {
-    return arr.log();
-}
+NDArray<T> cos(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> sin(const NDArray<T>& arr) {
-    return arr.sin();
-}
+NDArray<T> tan(const NDArray<T>& arr);
 
 template<typename T>
-NDArray<T> cos(const NDArray<T>& arr) {
-    return arr.cos();
-}
+NDArray<T> power(const NDArray<T>& arr, const T& exponent);
 
 template<typename T>
-NDArray<T> pow(const NDArray<T>& arr, const T& exponent) {
-    return arr.pow(exponent);
-}
+NDArray<T> power(const NDArray<T>& base, const NDArray<T>& exponent);
 
-// Output stream operator
+// Utility functions
 template<typename T>
-std::ostream& operator<<(std::ostream& os, const NDArray<T>& arr) {
-    os << arr.to_string();
-    return os;
-}
-
-// N-dimensional array creation helpers
-template<typename T>
-NDArray<T> zeros_like(const NDArray<T>& arr) {
-    return NDArray<T>(arr.shape(), T{});
-}
+NDArray<T> maximum(const NDArray<T>& a, const NDArray<T>& b);
 
 template<typename T>
-NDArray<T> ones_like(const NDArray<T>& arr) {
-    return NDArray<T>(arr.shape(), T{1});
-}
+NDArray<T> minimum(const NDArray<T>& a, const NDArray<T>& b);
 
 template<typename T>
-NDArray<T> full_like(const NDArray<T>& arr, const T& value) {
-    return NDArray<T>(arr.shape(), value);
-}
+NDArray<T> clip(const NDArray<T>& arr, const T& min_val, const T& max_val);
 
-// N-dimensional meshgrid
 template<typename T>
-std::vector<NDArray<T>> meshgrid(const std::vector<NDArray<T>>& arrays) {
-    if (arrays.empty()) {
-        throw std::invalid_argument("At least one array required for meshgrid");
-    }
-    
-    // All input arrays must be 1D
-    for (const auto& arr : arrays) {
-        if (arr.ndim() != 1) {
-            throw std::invalid_argument("All input arrays must be 1-dimensional");
-        }
-    }
-    
-    // Calculate output shape
-    std::vector<size_t> output_shape;
-    for (const auto& arr : arrays) {
-        output_shape.push_back(arr.shape()[0]);
-    }
-    
-    std::vector<NDArray<T>> result;
-    
-    for (size_t arr_idx = 0; arr_idx < arrays.size(); ++arr_idx) {
-        NDArray<T> grid(output_shape);
-        
-        for (size_t i = 0; i < grid.size(); ++i) {
-            auto indices = grid.unravel_index(i);
-            grid.flat(i) = arrays[arr_idx][{indices[arr_idx]}];
-        }
-        
-        result.push_back(grid);
-    }
-    
-    return result;
-}
+bool allclose(const NDArray<T>& a, const NDArray<T>& b, T rtol = T(1e-5), T atol = T(1e-8));
 
-// N-dimensional tensor operations
 template<typename T>
-NDArray<T> tensordot(const NDArray<T>& a, const NDArray<T>& b, 
-                     const std::vector<size_t>& axes_a, const std::vector<size_t>& axes_b) {
-    if (axes_a.size() != axes_b.size()) {
-        throw std::invalid_argument("Number of axes to contract must be equal");
-    }
-    
-    // Verify axes are valid
-    for (size_t axis : axes_a) {
-        if (axis >= a.ndim()) {
-            throw std::invalid_argument("Axis out of bounds for first array");
-        }
-    }
-    for (size_t axis : axes_b) {
-        if (axis >= b.ndim()) {
-            throw std::invalid_argument("Axis out of bounds for second array");
-        }
-    }
-    
-    // Verify dimensions match for contraction
-    for (size_t i = 0; i < axes_a.size(); ++i) {
-        if (a.shape()[axes_a[i]] != b.shape()[axes_b[i]]) {
-            throw std::invalid_argument("Contracted dimensions must have same size");
-        }
-    }
-    
-    // For simplicity, use the standard dot product for common cases
-    // Full N-dimensional tensor contraction would require complex reshaping
-    if (axes_a.size() == 1 && axes_a[0] == a.ndim() - 1 && axes_b[0] == 0) {
-        return a.dot(b);
-    }
-    
-    throw std::runtime_error("General tensordot not fully implemented - use dot() for standard cases");
-}
+bool array_equal(const NDArray<T>& a, const NDArray<T>& b);
 
-// Type aliases for convenience
+// Type aliases for common array types
 using Array = NDArray<double>;
 using ArrayF = NDArray<float>;
 using ArrayI = NDArray<int>;
 using ArrayL = NDArray<long>;
+using ArrayB = NDArray<bool>;
+
+#endif // NDARRAY_H
