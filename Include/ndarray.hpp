@@ -30,85 +30,18 @@ private:
 
 public:
     // Constructors and Destructors
-    template<typename T>
-    NDArray<T>::NDArray() : size_(0) {
-        // Default constructor - creates empty array
-    }
-
-    template<typename T>
-    NDArray<T>::NDArray(const std::vector<size_t>& shape) : shape_(shape) {
-        // Constructor with shape - creates uninitialized array
-        size_ = std::accumulate(shape_.begin(), shape_.end(), size_t(1), std::multiplies<size_t>());
-        data_.resize(size_);
-        calculate_strides();
-    }
-
-    template<typename T>
-    NDArray<T>::NDArray(const std::vector<size_t>& shape, const T& value) : shape_(shape) {
-        // Constructor with shape and fill value - creates array filled with specified value
-        size_ = std::accumulate(shape_.begin(), shape_.end(), size_t(1), std::multiplies<size_t>());
-        data_.resize(size_, value);
-        calculate_strides();
-    }
-
-    template<typename T>
-    NDArray<T>::NDArray(std::initializer_list<T> list) : data_(list) {
-        // Constructor from initializer list - creates 1D array
-        size_ = data_.size();
-        shape_ = {size_};
-        calculate_strides();
-    }
-
-    template<typename T>
-    NDArray<T>::NDArray(const NDArray& other) 
-        : data_(other.data_), shape_(other.shape_), strides_(other.strides_), size_(other.size_) {
-        // Copy constructor - deep copy of another NDArray
-    }
-
-    template<typename T>
-    NDArray<T>::NDArray(NDArray&& other) noexcept 
-        : data_(std::move(other.data_)), 
-        shape_(std::move(other.shape_)), 
-        strides_(std::move(other.strides_)), 
-        size_(other.size_) {
-        // Move constructor - takes ownership of another NDArray's resources
-        other.size_ = 0;
-    }
-
+    NDArray();
+    NDArray(const std::vector<size_t>& shape);
+    NDArray(const std::vector<size_t>& shape, const T& value);
+    NDArray(std::initializer_list<T> list);
+    NDArray(const NDArray& other);
+    NDArray(NDArray&& other) noexcept;
     ~NDArray() = default;
     
     // Assignment operators
-    template<typename T>
-    NDArray<T>& NDArray<T>::operator=(const NDArray& other) {
-        // Copy assignment operator - deep copy from another NDArray
-        if (this != &other) {
-            data_ = other.data_;
-            shape_ = other.shape_;
-            strides_ = other.strides_;
-            size_ = other.size_;
-        }
-        return *this;
-    }
-
-    template<typename T>
-    NDArray<T>& NDArray<T>::operator=(NDArray&& other) noexcept {
-        // Move assignment operator - takes ownership of another NDArray's resources
-        if (this != &other) {
-            data_ = std::move(other.data_);
-            shape_ = std::move(other.shape_);
-            strides_ = std::move(other.strides_);
-            size_ = other.size_;
-            other.size_ = 0;
-        }
-        return *this;
-    }
-
-    template<typename T>
-    NDArray<T>& NDArray<T>::operator=(const T& value) {
-        // Scalar assignment operator - fills entire array with a single value
-        std::fill(data_.begin(), data_.end(), value);
-        return *this;
-    }
+    NDArray& operator=(const NDArray& other);
+    NDArray& operator=(NDArray&& other) noexcept;
+    NDArray& operator=(const T& value);
     
     // Factory methods
     static NDArray zeros(const std::vector<size_t>& shape);
