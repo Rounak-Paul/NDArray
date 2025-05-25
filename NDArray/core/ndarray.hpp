@@ -211,7 +211,7 @@ public:
         } else { // Source is empty (e.g. shape (2,0,3))
             data_ptr_ = std::make_shared<std::vector<T>>();
         }
-         if (shape_.empty() && total_size_ == 1 && data_ptr_->empty()) {
+        if (shape_.empty() && total_size_ == 1 && data_ptr_->empty()) {
             // This case implies other.total_size_ was 1 (0-D array)
             // and for_each_index_iterative correctly copied the single element.
             // If other.total_size_ was 0 but shape was empty, it's an issue.
@@ -224,10 +224,10 @@ public:
     // Move constructor
     NDArray(NDArray&& other) noexcept
         : data_ptr_(std::move(other.data_ptr_)),
-          shape_(std::move(other.shape_)),
-          strides_(std::move(other.strides_)),
-          offset_(other.offset_),
-          total_size_(other.total_size_) {
+            shape_(std::move(other.shape_)),
+            strides_(std::move(other.strides_)),
+            offset_(other.offset_),
+            total_size_(other.total_size_) {
         // Reset other to a valid (empty or default) state
         other.shape_.clear();
         other.strides_.clear();

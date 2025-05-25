@@ -1,68 +1,74 @@
-// Example Usage (in a .cpp file)
-#include <iostream>
-#include <ndarray.hpp>
+#include "ndarray.hpp"
+#include <cmath> // for std::exp
+
+// Sigmoid activation function
+float sigmoid(float x) {
+    return 1.0f / (1.0f + std::exp(-x));
+}
+
+// Matrix-vector multiplication
+nd::NDArray<float> matvec_dot(const nd::NDArray<float>& mat, const nd::NDArray<float>& vec) {
+    if (mat.ndim() != 2 || vec.ndim() != 1 || mat.shape()[1] != vec.shape()[0]) {
+        throw std::runtime_error("Shape mismatch in matvec_dot");
+    }
+
+    std::vector<float> result(mat.shape()[0], 0.0f);
+    for (size_t i = 0; i < mat.shape()[0]; ++i) {
+        float sum = 0.0f;
+        for (size_t j = 0; j < mat.shape()[1]; ++j) {
+            sum += mat.at({i, j}) * vec.at({j});
+        }
+        result[i] = sum;
+    }
+    return nd::NDArray<float>({mat.shape()[0]}, result);
+}
+
+// Elementwise addition
+nd::NDArray<float> vec_add(const nd::NDArray<float>& a, const nd::NDArray<float>& b) {
+    if (a.shape() != b.shape()) throw std::runtime_error("Shape mismatch in vec_add");
+    std::vector<float> result(a.shape()[0]);
+    for (size_t i = 0; i < a.shape()[0]; ++i) {
+        result[i] = a.at({i}) + b.at({i});
+    }
+    return nd::NDArray<float>({a.shape()[0]}, result);
+}
+
+// Elementwise sigmoid activation
+nd::NDArray<float> sigmoid_vec(const nd::NDArray<float>& a) {
+    std::vector<float> result(a.shape()[0]);
+    for (size_t i = 0; i < a.shape()[0]; ++i) {
+        result[i] = sigmoid(a.at({i}));
+    }
+    return nd::NDArray<float>({a.shape()[0]}, result);
+}
 
 int main() {
-    // Create a 2x3 array of integers, initialized with 0
-    nd::NDArray<int> arr1 = nd::NDArray<int>::zeros({2, 3});
-    std::cout << "arr1 (zeros):\n" << arr1 << std::endl;
+    // Input: 2 features
+    nd::NDArray<float> input({2}, {0.5f, -0.3f});
 
-    // Fill with a value
-    arr1.fill(5);
-    std::cout << "arr1 (filled with 5):\n" << arr1 << std::endl;
+    // Weights for input -> hidden (2x2)
+    nd::NDArray<float> w1({2, 2}, {
+        0.1f, 0.4f,
+        -0.2f, 0.3f
+    });
 
-    // Create from shape and value
-    nd::NDArray<double> arr2({2, 2}, 3.14);
-    std::cout << "arr2 (2x2 filled with 3.14):\n" << arr2 << std::endl;
+    // Biases for hidden layer
+    nd::NDArray<float> b1({2}, {0.01f, -0.02f});
 
-    // Element access
-    arr2.at({0, 1}) = 1.618;
-    arr2({1,0}) = 2.718; // Using operator()
-    std::cout << "arr2 (modified):\n" << arr2 << std::endl;
-    std::cout << "Element (0,1) of arr2: " << arr2({0,1}) << std::endl;
+    // Weights for hidden -> output (1x2)
+    nd::NDArray<float> w2({1, 2}, {0.7f, -0.5f});
 
-    // Reshape (creates a view)
-    nd::NDArray<double> arr2_reshaped = arr2.reshape({4, 1});
-    std::cout << "arr2_reshaped (4x1 view of arr2):\n" << arr2_reshaped << std::endl;
-    
-    // Modifying view affects original (if data is shared)
-    arr2_reshaped.at({2,0}) = 9.99;
-    std::cout << "arr2 (after modifying reshaped view at logical index (2,0) -> original (1,0)):\n" << arr2 << std::endl;
-    std::cout << "arr2_reshaped (confirming modification):\n" << arr2_reshaped << std::endl;
+    // Bias for output layer
+    nd::NDArray<float> b2({1}, {0.05f});
 
+    // Forward pass
+    auto hidden_input = vec_add(matvec_dot(w1, input), b1);
+    auto hidden_output = sigmoid_vec(hidden_input);
 
-    // Arithmetic
-    nd::NDArray<int> a({2, 2}, 10);
-    nd::NDArray<int> b({2, 2}, 2);
-    nd::NDArray<int> c = a + b;
-    std::cout << "c = a + b:\n" << c << std::endl;
-    nd::NDArray<int> d = a * 5;
-    std::cout << "d = a * 5:\n" << d << std::endl;
-    nd::NDArray<int> e = 3 * a;
-     std::cout << "e = 3 * a:\n" << e << std::endl;
+    auto output_input = vec_add(matvec_dot(w2, hidden_output), b2);
+    auto output = sigmoid_vec(output_input);
 
-
-    // Arange and reshape
-    nd::NDArray<int> range_arr = nd::NDArray<int>::arange(0, 12).reshape({3,4});
-    std::cout << "range_arr (arange(0,12).reshape({3,4})):\n" << range_arr << std::endl;
-
-    // 0-D (scalar) array
-    nd::NDArray<float> scalar_arr(7.5f); // Implicitly { } shape, value 7.5f
-    // Note: The default constructor NDArray() makes an uninitialized 0-D array.
-    // To make a 0-D array with a specific value directly, you can use:
-    nd::NDArray<float> scalar_arr_explicit({}, 7.5f);
-    std::cout << "scalar_arr_explicit:\n" << scalar_arr_explicit << std::endl;
-    std::cout << "Value of scalar_arr_explicit: " << scalar_arr_explicit() << std::endl;
-    nd::NDArray<float> scalar_arr_reshaped = scalar_arr_explicit.reshape({1,1,1});
-    std::cout << "scalar_arr_reshaped from 0-D:\n" << scalar_arr_reshaped << std::endl;
-
-    try {
-        nd::NDArray<int> err_arr({2,2});
-        // err_arr.at({2,0}); // This would throw std::out_of_range
-        // nd::NDArray<int> err_sum = err_arr + nd::NDArray<int>({2,3}); // This would throw std::invalid_argument
-    } catch (const std::exception& e) {
-        std::cerr << "Exception caught: " << e.what() << std::endl;
-    }
+    std::cout << "Output of ANN: " << output << std::endl;
 
     return 0;
 }
