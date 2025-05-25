@@ -1,82 +1,68 @@
-#include "../Include/ndarray.hpp"
-
+// Example Usage (in a .cpp file)
 #include <iostream>
-#include <random>
-
-class SimpleNN {
-private:
-    ArrayF W1, b1, W2, b2;
-    std::mt19937 rng;
-    
-public:
-    SimpleNN(size_t input_size, size_t hidden_size, size_t output_size) 
-        : rng(std::random_device{}()) {
-        
-        // Initialize weights with He initialization
-        W1 = he_uniform<float>({input_size, hidden_size}, rng);
-        b1 = zeros<float>({1, hidden_size});
-        W2 = he_uniform<float>({hidden_size, output_size}, rng);
-        b2 = zeros<float>({1, output_size});
-    }
-    
-    ArrayF forward(const ArrayF& X) {
-        // First layer: X @ W1 + b1
-        auto z1 = X.dot(W1) + b1;  // Broadcasting handles bias addition
-        auto a1 = relu(z1);    // ReLU activation
-        
-        // Output layer: a1 @ W2 + b2  
-        auto z2 = a1.dot(W2) + b2;
-        auto output = softmax(z2, 1);  // Softmax along feature axis
-        
-        return output;
-    }
-    
-    void train_step(const ArrayF& X, const ArrayF& y, float lr = 0.01f) {
-        // Forward pass
-        auto predictions = forward(X);
-        
-        // Compute loss
-        float loss = cross_entropy_loss(predictions, y);
-        std::cout << "Loss: " << loss << std::endl;
-        
-        // Backward pass would go here (you'd need gradient computation)
-        // This is where you'd implement backpropagation
-    }
-};
+#include <ndarray.hpp>
 
 int main() {
-    using namespace np;
+    // Create a 2x3 array of integers, initialized with 0
+    nd::NDArray<int> arr1 = nd::NDArray<int>::zeros({2, 3});
+    std::cout << "arr1 (zeros):\n" << arr1 << std::endl;
+
+    // Fill with a value
+    arr1.fill(5);
+    std::cout << "arr1 (filled with 5):\n" << arr1 << std::endl;
+
+    // Create from shape and value
+    nd::NDArray<double> arr2({2, 2}, 3.14);
+    std::cout << "arr2 (2x2 filled with 3.14):\n" << arr2 << std::endl;
+
+    // Element access
+    arr2.at({0, 1}) = 1.618;
+    arr2({1,0}) = 2.718; // Using operator()
+    std::cout << "arr2 (modified):\n" << arr2 << std::endl;
+    std::cout << "Element (0,1) of arr2: " << arr2({0,1}) << std::endl;
+
+    // Reshape (creates a view)
+    nd::NDArray<double> arr2_reshaped = arr2.reshape({4, 1});
+    std::cout << "arr2_reshaped (4x1 view of arr2):\n" << arr2_reshaped << std::endl;
     
-    // Create a simple neural network
-    SimpleNN model(784, 128, 10);  // MNIST-like architecture
-    
-    // Create some dummy data
-    auto X = random<float>({32, 784});  // Batch of 32 samples, 784 features
-    auto y = zeros<float>({32, 10});    // One-hot encoded labels
-    
-    // Fill some random labels
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 9);
-    
-    for (size_t i = 0; i < 32; ++i) {
-        y[{i, static_cast<size_t>(dis(gen))}] = 1.0f;
+    // Modifying view affects original (if data is shared)
+    arr2_reshaped.at({2,0}) = 9.99;
+    std::cout << "arr2 (after modifying reshaped view at logical index (2,0) -> original (1,0)):\n" << arr2 << std::endl;
+    std::cout << "arr2_reshaped (confirming modification):\n" << arr2_reshaped << std::endl;
+
+
+    // Arithmetic
+    nd::NDArray<int> a({2, 2}, 10);
+    nd::NDArray<int> b({2, 2}, 2);
+    nd::NDArray<int> c = a + b;
+    std::cout << "c = a + b:\n" << c << std::endl;
+    nd::NDArray<int> d = a * 5;
+    std::cout << "d = a * 5:\n" << d << std::endl;
+    nd::NDArray<int> e = 3 * a;
+     std::cout << "e = 3 * a:\n" << e << std::endl;
+
+
+    // Arange and reshape
+    nd::NDArray<int> range_arr = nd::NDArray<int>::arange(0, 12).reshape({3,4});
+    std::cout << "range_arr (arange(0,12).reshape({3,4})):\n" << range_arr << std::endl;
+
+    // 0-D (scalar) array
+    nd::NDArray<float> scalar_arr(7.5f); // Implicitly { } shape, value 7.5f
+    // Note: The default constructor NDArray() makes an uninitialized 0-D array.
+    // To make a 0-D array with a specific value directly, you can use:
+    nd::NDArray<float> scalar_arr_explicit({}, 7.5f);
+    std::cout << "scalar_arr_explicit:\n" << scalar_arr_explicit << std::endl;
+    std::cout << "Value of scalar_arr_explicit: " << scalar_arr_explicit() << std::endl;
+    nd::NDArray<float> scalar_arr_reshaped = scalar_arr_explicit.reshape({1,1,1});
+    std::cout << "scalar_arr_reshaped from 0-D:\n" << scalar_arr_reshaped << std::endl;
+
+    try {
+        nd::NDArray<int> err_arr({2,2});
+        // err_arr.at({2,0}); // This would throw std::out_of_range
+        // nd::NDArray<int> err_sum = err_arr + nd::NDArray<int>({2,3}); // This would throw std::invalid_argument
+    } catch (const std::exception& e) {
+        std::cerr << "Exception caught: " << e.what() << std::endl;
     }
-    
-    // Train for a few steps
-    for (int epoch = 0; epoch < 5; ++epoch) {
-        std::cout << "Epoch " << epoch << ": ";
-        model.train_step(X, y);
-    }
-    
-    // Test convolution
-    auto image_batch = random<float>({8, 3, 32, 32});  // 8 RGB images, 32x32
-    auto conv_kernel = random<float>({16, 3, 3, 3});   // 16 filters, 3x3
-    
-    auto conv_output = image_batch.conv2d(conv_kernel);
-    std::cout << "\nConv output shape: ";
-    for (auto dim : conv_output.shape()) std::cout << dim << " ";
-    std::cout << std::endl;
-    
+
     return 0;
 }

@@ -3,5 +3,5 @@ add_executable(Testbed
 )
 
 target_include_directories(Testbed PUBLIC 
-    ${PROJECT_SOURCE_DIR}/Include
+    ${PROJECT_SOURCE_DIR}/NDArray
 )
